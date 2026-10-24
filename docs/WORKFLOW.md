@@ -393,13 +393,15 @@ generated page or not, fails it, so the sequence runs on a committed revision. M
 run on their own, each in isolation: CI's `risk`, which classifies the change (below);
 `negative`, `model`, `formal-model`, `acceptance` and `queue-integrity`, more of CI's on
 each pull request, `negative` and `formal-model` of them by the class `risk` gives; and
-three on a cadence, in the `safe-push-tests` workflow (below): `safe-push-tests`, and
-`negative-tests` and `formal-model-kernel`, which run on main the commands of CI's
-`negative` and `formal-model` jobs. Below, the first commands are those of CI's
-`negative`, `model` and `formal-model` jobs, and so of the cadence's two; the next two
-run the acceptance job's tests and checklist without its CI comparison, and the last two
-run the `safe-push-tests` job's; the commands of `risk` are under "Which jobs run for
-which class", after the block, and those of `queue-integrity` after that:
+on a cadence, in the `safe-push-tests` workflow (below), the shards of `safe-push-shards`
+and the `safe-push-tests` job, which gives the verdict on them, and `negative-tests` and
+`formal-model-kernel`, which run on main the commands of CI's `negative` and
+`formal-model` jobs. Below, the first commands are those of CI's `negative`, `model` and
+`formal-model` jobs, and so of the cadence's two; the next two run the acceptance job's
+tests and checklist without its CI comparison, and the last three run the tests the
+shards run, whole and then one shard as the cadence runs it; the commands of `risk` are
+under "Which jobs run for which class", after the block, and those of `queue-integrity`
+after that:
 
 ```sh
 python3 scripts/negative_tests.py      # CI's `negative` job, after lake build and Facts.lean
@@ -413,7 +415,8 @@ python3 -I tests/test_check_acceptance.py   # CI's `acceptance` job: the compari
 # After lake build, lake build Audit and Facts.lean, the checklist run:
 python3 scripts/check_acceptance.py --output "${RUNNER_TEMP:-/tmp}/acceptance/report.md" --json "${RUNNER_TEMP:-/tmp}/acceptance/verdicts.json"
 python3 -m pip install -r scripts/requirements-test_safe_push.txt
-python3 scripts/test_safe_push.py      # the `safe-push-tests` job, on a cadence: no Lean
+python3 scripts/test_safe_push.py      # every test the shards run, in one run: no Lean
+python3 scripts/test_safe_push.py --shard 3/8 --ran "${RUNNER_TEMP:-/tmp}/ran-3.json"   # the third shard of eight, as the cadence runs it
 ```
 
 `RUNNER_TEMP` supplies GitHub Actions' temporary directory; the fallback writes under
@@ -438,8 +441,8 @@ label is read from the event that started the run, and `git safe-push` adds a pu
 request's labels after it pushes, so a label given with that push counts from the next
 push; main's run after the merge runs every job in full; and the merge gate holds a
 release until the full pre-flight has run on its head and a run of the `safe-push-tests`
-workflow there has passed each of its three jobs ([section 10, "Landing work: pull
-requests"](#landing-work-pull-requests), step 4). `check`, `model`, `acceptance`,
+workflow there has passed each of its jobs, the shards among them, but `report` ([section
+10, "Landing work: pull requests"](#landing-work-pull-requests), step 4). `check`, `model`, `acceptance`,
 `queue-integrity` and `queue-gaps` run for every class, with no `needs: risk`:
 `queue-integrity` runs its offline cases on every pull request and its judge on every
 group, and `queue-gaps` does its work on merge groups only. `negative` runs in full for
@@ -481,13 +484,15 @@ October ([the decision](decisions/2026-10-22-checks-by-risk.md)):
 Main's run after each merge, the post-merge workflow's call, is R5, and runs every job in
 full: `negative` and `formal-model` beside `check`, `model` and `acceptance`, which runs on
 every event CI runs on. The cadence, the
-`safe-push-tests` workflow, runs its three jobs on main every six hours, whatever landed:
-the safe_push tests (72 to 78 minutes, and 137 on the slow run cited below), the negative
-tests in full, and the formal model's build and kernel re-check. A release runs three
+`safe-push-tests` workflow, runs on main every six hours, whatever landed: the safe_push
+tests, in eight shards side by side (in one job they took 72 to 78 minutes, and 137 on the
+slow run cited below), the negative tests in full, and the formal model's build and kernel
+re-check. A release runs three
 things at its own head: the full
 pre-flight, since its label makes it R5; its pull request's CI, in full when its run
-starts with the label; and a run of the `safe-push-tests` workflow, whose three jobs must
-each pass ([section 10](#landing-work-pull-requests), step 4). So the negative tests check
+starts with the label; and a run of the `safe-push-tests` workflow, whose jobs, the shards
+among them, must each pass, but `report` ([section 10](#landing-work-pull-requests), step
+4). So the negative tests check
 a change of R0 to R2 only once it has landed, on main: a break they would have caught
 shows within six hours, and holds the release until its repair lands.
 
@@ -503,39 +508,76 @@ script, from the base commit, but GitHub takes the workflow file itself from the
 request, which could change it, so the job only shows the hold: the authority is the merge
 gate, which reads the issues again when the coordinator merges (section 10).
 
-The `safe-push-tests` job runs `python3 scripts/test_safe_push.py`, the tests of the gate
-every pull request lands through (section 10), in a workflow of its own,
-`.github/workflows/safe-push-tests.yml`: every six hours on main, and on demand
+The `safe-push-tests` workflow, `.github/workflows/safe-push-tests.yml`, runs
+`python3 scripts/test_safe_push.py`, the tests of the gate every pull request lands through
+(section 10), on a cadence of its own: every six hours on main, and on demand
 (`workflow_dispatch`), never on a pull request. The owner, 22 October 2026: "I'm fine that
 this needs to run on a cadence and blocks release but every run no. And it has to be fast"
-([the decision](decisions/2026-10-22-suite-on-cadence.md)). On the same triggers the
+([the decision](decisions/2026-10-22-suite-on-cadence.md)). The tests run in shards, and
+the job named `safe-push-tests` gives the verdict on them (below). On the same triggers the
 workflow runs two more jobs, as CI's `negative` and `formal-model` jobs run them:
 `negative-tests`, the build and the negative tests in full, and `formal-model-kernel`, the
 formal model's build and its kernel re-check, neither sharing a required check's name. A red
 run on main, any of the three jobs failed, cancelled or timed out, opens one issue labelled
 `blocks-release`, or adds the run to the one already open, with the run's link, the jobs
-that were red and the tests of `scripts/test_safe_push.py` that failed, so the release
-waits for it until the issue is closed, with a link to a later green run; that
-is done by a fourth job, the only one with leave to write issues, which runs no code of
-the repository. For now a red run holds the release alone (whether trains of tooling hold
-as well while the cadence is red is left to a later part of #274): trains of every class
-go on landing while the issue is open, each by its own class, and so does the repair,
-which is a train like any other, classed by its files (a repair to a check is R3, to a
-proof R2, and takes that lane). The issue is closed with a link to a later run on main
-in which all three jobs are green, and the release waits for that. The suite's tests
-read the whole tree,
-content as well as code: the check
-inputs safe_push guards, the workflows, this page, whose first command block they compare
-with the registry's render, the registry itself, which they hold to safe_push's reading of
-it and the `check` job to its one step, and content such as `heath/I/01.md`, the
-decisions page, `docs/briefs/book-I.md`, `docs/program.toml`, `docs/reading.md` and
-`facts.json`, over which they run `check_fidelity.py` and `render.py`; so any change can
-break them, and the next run shows it. They need Git with the whole history and the pinned
-PyYAML, but no Lean and no network. On the cadence the whole suite has taken 72 to 78
-minutes on GitHub's runners, and 137 on a slow one, and the job may take 300; `FullChecks`,
-the one test that needs Lean, is skipped without `STOICHEIA_SLOW_TESTS=1`, there as
-anywhere. Each of the three jobs reads the repository with no other permission, and its
-checkout keeps no token.
+that were red and the tests of `scripts/test_safe_push.py` that failed, read from every
+shard's log, so the release waits for it until the issue is closed, with a link to a later
+green run; that is done by the `report` job, the only one with leave to write issues, which
+runs no code of the repository. For now a red run holds the release alone (whether trains
+of tooling hold as well while the cadence is red is left to a later part of #274): trains
+of every class go on landing while the issue is open, each by its own class, and so does
+the repair, which is a train like any other, classed by its files (a repair to a check is
+R3, to a proof R2, and takes that lane). The issue is closed with a link to a later run on
+main in which all three jobs are green, and the release waits for that. The suite's tests
+read the whole tree, content as well as code: the check inputs safe_push guards, the
+workflows, this page, whose first command block they compare with the registry's render,
+the registry itself, which they hold to safe_push's reading of it and the `check` job to
+its one step, and content such as `heath/I/01.md`, the decisions page,
+`docs/briefs/book-I.md`, `docs/program.toml`, `docs/reading.md` and `facts.json`, over
+which they run `check_fidelity.py` and `render.py`; so any change can break them, and the
+next run shows it. They need Git with the whole history and the pinned PyYAML, but no Lean
+and no network; `FullChecks`, the one test that needs Lean, is skipped without
+`STOICHEIA_SLOW_TESTS=1`, there as anywhere. Every job but `report` reads the repository
+with no other permission, and its checkout keeps no token.
+
+**The shards.** In one job, on the cadence, the whole suite took 72 to 78 minutes on
+GitHub's runners, and 137 on a slow one; on as slow a runner it reached the job's limit,
+then 150 minutes, and was cancelled there
+([the decision of 23 October](decisions/2026-10-23-cadence-timeout.md)). So the workflow
+runs it as eight shards side by side (#233,
+[the decision](decisions/2026-10-24-safe-push-shards.md)): the `safe-push-shards` job's
+matrix runs `python3 scripts/test_safe_push.py --shard K/N --ran FILE` for each K from 1
+to N, N being written once in the workflow, in the matrix, whose `strategy.job-total`
+each shard is given as N; each shard may take 60 minutes, and none stops the others when
+it fails. Every test
+runs in exactly one shard: `--shard` lists the tests with unittest's own loader, so that a
+new test is never missed, and deals them out by the seconds each took on a GitHub runner,
+kept in `scripts/test_safe_push_times.json`, the heaviest first, each to the shard with the
+least time so far. The times were read from the CI run of #239 on 21 October, when the
+suite had 288 tests; a test the file does not name, one added or renamed since, weighs their
+median, and each shard's log names it. The proof is built from what the shards ran, not
+from the dealing. Each shard writes the tests it ran, each with its outcome, to the file
+`--ran` names, and keeps it as an artifact, a test having failed or not, for 35 days; and
+it keeps its log, from which the report takes the tests that failed. Whether a later
+attempt of the run can fetch a list an earlier attempt kept is GitHub's to say, and
+nothing relies on it: a run re-run with "re-run all jobs" is judged afresh, and one re-run
+with "re-run failed jobs", whose proof may not see the other shards' earlier lists, then
+stays red, for the proof never passes on lists it cannot see. Then
+the `safe-push-tests` job, which needs the shards and runs whatever they did, checks out
+the commit they ran, as they did, fetches every list and runs
+`python3 scripts/test_safe_push.py --cover DIR`, which lists the tests with unittest's
+loader at that commit, reads N from the matrix, and fails, naming each, on a test no shard
+ran, a test run twice, a shard that left no list (as one that stops before its end leaves
+none), a test the loader does not list, and a test that did not pass. Its verdict is green
+only when two things hold, each judged on its own: GitHub's result for the matrix is
+success, which it is only when every shard succeeded; and the proof passed. A shard that
+failed, was cancelled, stopped at its time limit or was skipped, or a list missing, makes
+the job red, never skipped, and the run red with it. Both are needed: should a later
+attempt see a list an earlier one kept, that list stays when, in a rerun of all the jobs,
+its shard is cancelled before it keeps a new one, so the proof alone could pass; and the
+matrix's result says nothing of which tests ran. To run one shard as the cadence does, give its
+number and the count, as in `python3 scripts/test_safe_push.py --shard 3/8`; without
+`--shard` the whole suite runs.
 
 `scripts/safe_push.py` runs the commands for `check`, `model` and `negative` above on the
 head commit of every pull request of R3 to R5 (section 10): those of `check` as
@@ -902,7 +944,8 @@ looked into.
     which refuses a pull request labelled `release` while any issue or pull request
     labelled `blocks-release` is open, or when GitHub cannot be read. That merge also
     needs the full pre-flight of the release's head, which its label makes R5, and a green
-    run of the `safe-push-tests` workflow at that exact head, each of its three jobs passed
+    run of the `safe-push-tests` workflow at that exact head, each of its jobs passed, the
+    shards among them, but `report`
     (`gh workflow run safe-push-tests.yml --ref <branch>`; section 8), the head's copy of
     that workflow being origin/main's: a change to it lands first, in a pull request of
     its own. The `release-gate` job runs on the
@@ -1927,7 +1970,8 @@ checkout's, and says so. The launcher and the pre-push hook run Python 3.11 or l
    only with a green run of `.github/workflows/safe-push-tests.yml` at that exact head:
    completed and successful, its jobs `safe-push-tests`, `negative-tests` and
    `formal-model-kernel` each there and passed (safe_push's `SUITE_JOBS`), and every other
-   job passed but `report`, which runs only for a red run on main (#301). A run at the head
+   job passed, the shards of `safe-push-shards` among them, but `report`, which runs only
+   for a red run on main (#301). A run at the head
    runs the head's copy of that workflow, which could drop a job, so the head's copy must
    be origin/main's: a release that changes it is refused, and the change lands first, in
    a pull request of its own. Malformed pull request labels refuse
@@ -2041,5 +2085,5 @@ cases include unfinished work left unwritten, closed or unlabelled issues, open 
 issues, the release held by an open blocker or an unreadable reply, and an ordinary pull
 request merging without reading the blockers;
 `STOICHEIA_SLOW_TESTS=1` adds one run of the full checks, Lean and all. The
-`safe-push-tests` job runs the tests, without that run, every six hours on main and on
-demand (section 8).
+`safe-push-tests` workflow runs the tests, in eight shards and without that run, every six
+hours on main and on demand (section 8).

@@ -5,12 +5,13 @@ name: Safe-push tests
 # (the owner, 22 October 2026: "I'm fine that this needs to run on a cadence and blocks
 # release but every run no. And it has to be fast"; the decision entry
 # docs/decisions/2026-10-22-suite-on-cadence.md): every six hours on main, and on demand.
-# Beside them, on the same triggers, run the full negative tests and the formal model's
-# build and kernel re-check, which CI skips on pull requests of the lower risk classes,
-# the formal model only when the change touches none of its inputs
-# (docs/decisions/2026-10-22-risk-lanes.md). A red run of any of the three jobs opens one
-# issue labelled blocks-release, or adds the run to the one already open, so the release
-# waits for it.
+# The suite runs in shards side by side, and the job named safe-push-tests gives the
+# verdict on them all (#233). Beside them, on the same triggers, run the full negative
+# tests and the formal model's build and kernel re-check, which CI skips on pull requests
+# of the lower risk classes, the formal model only when the change touches none of its
+# inputs (docs/decisions/2026-10-22-risk-lanes.md). A red run of safe-push-tests or of
+# either of the other two opens one issue labelled blocks-release, or adds the run to the
+# one already open, so the release waits for it.
 on:
   schedule:
     - cron: "17 */6 * * *"
@@ -19,18 +20,29 @@ on:
 permissions: {}
 
 jobs:
-  safe-push-tests:
-    # The tests need Git with the whole history and the pinned YAML parser, but no Lean
-    # and no network: FullChecks, which needs Lean, is skipped without
+  safe-push-shards:
+    # The whole of scripts/test_safe_push.py, in eight shards side by side. In one job, on
+    # the cadence, it took 72 to 78 minutes, 137 on a slow runner (run 39901919693), and on
+    # as slow a runner it reached 150 and was cancelled there (run 39946930069).
+    # `--shard K/N` lists the tests with unittest's own loader and deals them out by the
+    # seconds each took on a GitHub runner (scripts/test_safe_push_times.json), so that
+    # each test runs in exactly one shard; a test missing from that file weighs their
+    # median, and still runs. The tests need Git with the whole history and the pinned YAML
+    # parser, but no Lean and no network: FullChecks, which needs Lean, is skipped without
     # STOICHEIA_SLOW_TESTS=1, as it is anywhere.
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # On the cadence the whole suite took 72 to 78 minutes, and 137 on a slow runner
-    # (run 39901919693). On as slow a runner, with #383's train checks, it reached 150 and
-    # was cancelled there, mid-suite, with no hang (run 39946930069). Room to spare again,
-    # under GitHub's 360, until #233 shards the suite.
-    timeout-minutes: 300
+    # The slowest run in one job was still going at 150 minutes; shared among eight, with
+    # each shard's own setup, that leaves room to spare.
+    timeout-minutes: 60
+    strategy:
+      # Every shard runs to its end, so that one failing hides none of the others'.
+      fail-fast: false
+      matrix:
+        # 1 to N, each once, and N written here alone: strategy.job-total, which each
+        # shard is given as N, is N too, and the proof reads N from this list.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -46,19 +58,123 @@ jobs:
       - name: Install the pinned YAML parser the tests read the workflow with
         run: python3 -m pip install -r scripts/requirements-test_safe_push.txt
 
-      - name: Check the gate every pull request lands through, guard by guard
+      - name: Check the gate every pull request lands through, guard by guard, one shard of the tests
+        # --ran: after its run the shard writes the tests it ran, each with its outcome.
         run: |
           set -o pipefail
-          python3 scripts/test_safe_push.py 2>&1 | tee "$RUNNER_TEMP/test_safe_push.log"
+          python3 scripts/test_safe_push.py --shard ${{ matrix.shard }}/${{ strategy.job-total }} --ran "$RUNNER_TEMP/ran-${{ matrix.shard }}.json" 2>&1 | tee "$RUNNER_TEMP/test_safe_push-${{ matrix.shard }}.log"
 
-      - name: Keep the log, for the issue a red run opens
+      - name: Keep the list of the tests this shard ran, for the proof
+        # Kept when a test failed too, so that the proof names it. A shard that stops
+        # before its end writes no list and keeps none, and the proof then fails. A shard
+        # run again replaces its list. Kept for 35 days. Whether a later attempt of the run
+        # can fetch a list an earlier attempt kept is GitHub's to say, and nothing relies on
+        # it: a rerun of all the jobs is judged afresh, and a rerun of the failed jobs
+        # alone, whose proof may not see the other shards' earlier lists, then stays red,
+        # for the proof never passes on lists it cannot see.
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: test_safe_push-log
-          path: ${{ runner.temp }}/test_safe_push.log
+          name: safe-push-ran-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ran-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 35
+          overwrite: true
+
+      - name: Keep the shard's log, for the issue a red run opens
+        # A shard run again replaces its log too.
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test_safe_push-log-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test_safe_push-${{ matrix.shard }}.log
           retention-days: 35
           if-no-files-found: ignore
+          overwrite: true
+
+  safe-push-tests:
+    # The verdict on the shards, under the job's old name, which the release's gate and
+    # the report read. It runs whatever the shards' result (always()), so that it is never
+    # skipped, and it is green only when two things hold, each judged on its own:
+    # - GitHub's result for the matrix, one value for all its shards, is success, which it
+    #   is only when every shard succeeded. Anything else is red: failure, cancelled,
+    #   skipped, or any other value. A shard stopped at its time limit gives failure or
+    #   cancelled, red either way.
+    # - The proof passed: every shard's list is there, and they show each test the loader
+    #   lists run once and passed. Each list carries its shard's K and N and each test's
+    #   outcome, and the proof fails on a K from 1 to N with no list, so a shard that did
+    #   not run, or stopped before its end, fails it; and on any test that did not pass, so
+    #   a shard one of whose tests failed fails it too.
+    # Neither can pass with a shard missing. Both are needed: should a later attempt see a
+    # list an earlier one kept, that list stays when, in a rerun of all the jobs, its
+    # shard is cancelled before it keeps a new one, so the proof alone could pass; and the
+    # matrix's result says nothing of which tests ran.
+    needs: safe-push-shards
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # The proof checks out the commit the shards ran, as they did, and reads the tests
+      # unittest's loader lists there and the N of the matrix there.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # No token stays in .git/config.
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned YAML parser the proof reads the workflow with
+        id: install
+        run: python3 -m pip install -r scripts/requirements-test_safe_push.txt
+
+      - name: Fetch every shard's list of the tests it ran
+        # A fetch that fails fails the job, and the proof still runs, naming each list it
+        # lacks.
+        id: fetch
+        uses: actions/download-artifact@v5
+        with:
+          # Each list in a folder of its own, so that none can hide another.
+          pattern: safe-push-ran-*
+          path: ${{ runner.temp }}/safe-push-ran
+
+      - name: Prove that every test ran once, in one shard, and passed
+        # Against the tests unittest's loader lists at this commit and the matrix's N, it
+        # fails, naming each, on a test no shard ran, a test run twice, a shard that left
+        # no list, a test the loader does not list, and a test that did not pass. It runs
+        # once the checkout, Python and the parser are ready, whatever the shards' result
+        # and whether or not the fetch failed.
+        id: cover
+        if: always() && steps.install.outcome == 'success'
+        run: python3 scripts/test_safe_push.py --cover "$RUNNER_TEMP/safe-push-ran"
+
+      - name: Pass only when every shard succeeded and the proof passed
+        # Whatever failed before it; a failed fetch fails the job by itself.
+        id: verdict
+        if: always()
+        env:
+          SHARDS: ${{ needs.safe-push-shards.result }}
+          COVER: ${{ steps.cover.outcome }}
+        run: |
+          red=0
+          case "$SHARDS" in
+            success) echo "Every shard of scripts/test_safe_push.py succeeded." ;;
+            failure) echo "The shards ended in failure: a shard failed, and the proof above and the shard's log name the test."; red=1 ;;
+            cancelled) echo "The shards ended cancelled: a shard was cancelled, so not every test is known to have passed."; red=1 ;;
+            skipped) echo "The shards were skipped, so no test ran."; red=1 ;;
+            *) echo "The shards ended '$SHARDS', which is not success."; red=1 ;;
+          esac
+          if [ "$COVER" = success ]; then
+            echo "The shards' lists prove that every test ran once, in one shard, and passed."
+          else
+            echo "The proof that every test ran once, in one shard, and passed ended '$COVER', not success."
+            red=1
+          fi
+          exit "$red"
 
   negative-tests:
     # The negative tests in full, as CI's `negative` job runs them: break the project on
@@ -144,7 +260,7 @@ jobs:
     # A red run of main (any of the three jobs failed, cancelled or timed out) opens one
     # issue labelled blocks-release, or comments on the one already open, with the run's
     # link, the jobs that were red, and the tests that failed. This job alone may write
-    # issues, and it runs no code of the repository: it reads the log the tests left and
+    # issues, and it runs no code of the repository: it reads the logs the shards left and
     # calls gh. The issue's title is the one it had before the second and third jobs
     # joined, so an issue already open is found.
     needs: [safe-push-tests, negative-tests, formal-model-kernel]
@@ -160,11 +276,12 @@ jobs:
       issues: write
     timeout-minutes: 10
     steps:
-      - name: Fetch the tests' log
+      - name: Fetch every shard's log
         continue-on-error: true
         uses: actions/download-artifact@v5
         with:
-          name: test_safe_push-log
+          # Each log in a folder of its own.
+          pattern: test_safe_push-log-*
           path: ${{ runner.temp }}/log
 
       - name: Open or update the blocks-release issue
@@ -179,12 +296,12 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           title="safe-push-tests: the cadence run on main is red"
-          log="$RUNNER_TEMP/log/test_safe_push.log"
+          logs=$(find "$RUNNER_TEMP/log" -type f -name 'test_safe_push-*.log' 2>/dev/null || true)
           body="$RUNNER_TEMP/body.md"
           {
             echo "The cadence run on main at \`$SHA\` was red in these jobs:"
             echo
-            [ "$TESTS" = success ] || echo "- \`safe-push-tests\` (\`scripts/test_safe_push.py\`): $TESTS"
+            [ "$TESTS" = success ] || echo "- \`safe-push-tests\` (\`scripts/test_safe_push.py\`, its shards and the proof that every test ran once and passed): $TESTS"
             [ "$NEGATIVE" = success ] || echo "- \`negative-tests\` (\`scripts/negative_tests.py\`, after the build): $NEGATIVE"
             [ "$KERNEL" = success ] || echo "- \`formal-model-kernel\` (the formal model's build and kernel re-check): $KERNEL"
             echo
@@ -192,8 +309,10 @@ jobs:
             echo
             if [ "$TESTS" = success ]; then
               echo "The tests of \`scripts/test_safe_push.py\` passed; the run's page has the red jobs' logs."
-            elif [ -f "$log" ]; then
-              all=$(grep -E '^(FAIL|ERROR): ' "$log" | sort -u | cut -c1-300 || true)
+            elif [ -n "$logs" ]; then
+              # Every shard's log that was kept, each read whole.
+              all=$(find "$RUNNER_TEMP/log" -type f -name 'test_safe_push-*.log' -exec cat {} + |
+                grep -E '^(FAIL|ERROR): ' | sort -u | cut -c1-300 || true)
               # sed reads all its input, so printf never meets a closed pipe: head would
               # stop early, printf would take SIGPIPE, and under bash's pipefail the step
               # would end before the issue opens (#300).
@@ -209,10 +328,10 @@ jobs:
                 echo "$failed"
                 echo '```'
               else
-                echo "No failing test is named in the log (a run cut off or cancelled, say); the run's log says why."
+                echo "No failing test is named in the shards' logs (a shard cut off or cancelled, say, or only the proof failed); the run's page says why."
               fi
             else
-              echo "The run left no log; the run's page says why."
+              echo "The run left no shard's log; the run's page says why."
             fi
             echo
             echo "This issue holds the release until it is closed, with a link to a later run of this workflow on main in which all three jobs are green (docs/WORKFLOW.md, section 8)."
