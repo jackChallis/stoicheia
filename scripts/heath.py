@@ -338,6 +338,7 @@ WORD = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 BOUND_NAME = re.compile(r"[^\W\d][\w'!?₀-₉]*")
 
 _STR, _LIST, _TABLE, _NAMES, _BOOL = "string", "list", "table", "names", "boolean"
+_WAYS = "ways"  # a list of combinations, each a list of axiom names
 # Each section's keys, as (type, required). A "stamp" key is written by
 # scripts/review_stamp.py, and required unless an unstamped record is asked for.
 # [review] `text` is a stamp too, but not yet required: the records stamped before it
@@ -351,7 +352,7 @@ FIELDS = {
     "route": {"kind": (_STR, True), "note": (_STR, False)},
     "representation": {"tags": (_LIST, True), "note": (_STR, False)},
     "overlap": {"rule": (_STR, True), "also": (_LIST, False), "kind": (_STR, True),
-                "note": (_STR, False)},
+                "ways": (_WAYS, False), "note": (_STR, False)},
     "coverage": {"checked": (_LIST, False), "explains": (_LIST, False),
                  "text_only": (_LIST, False)},
     "passage": {"at": (_STR, True), "kind": (_STR, True), "helper": (_STR, False),
@@ -477,6 +478,11 @@ def _shape(record, require_stamp: bool) -> list[str]:
                     bad(f"{label}: `{key}` lists {x!r} twice")
             elif kind == _BOOL and not isinstance(v, bool):
                 bad(f"{label}: `{key}` must be true or false")
+            elif kind == _WAYS and not (isinstance(v, list) and v and all(
+                    isinstance(w, list) and w and all(isinstance(x, str) and x.strip()
+                                                      for x in w) for w in v)):
+                bad(f"{label}: `{key}` must be a non-empty list of combinations, each a "
+                    "non-empty list of axiom names; leave it out when there are none")
     return problems
 
 
@@ -582,11 +588,14 @@ def validate_review(record: dict, book: str, n: int, *, require_stamp: bool = Tr
             elif terms[t]["kind"] == "scope" and scope == "full":
                 bad(f"[representation]: tag {t!r} narrows the statement, but its scope is full")
 
-    # [overlap]
+    # [overlap]: `rule` with `also` is the first combination that contains the proposition,
+    # and `ways` lists any further ones, each a different set of rules. Whether each is
+    # an axiom, and proved in Audit/Overlaps.lean, is check_fidelity's business.
     if "overlap" in record:
         ov = record["overlap"]
-        if any(re.search(r"\s", r) for r in [ov["rule"]] + ov.get("also", [])):
-            bad("[overlap]: `rule` and `also` name axioms as facts.json writes them, "
+        ways = ov.get("ways", [])
+        if any(re.search(r"\s", r) for r in [ov["rule"]] + ov.get("also", []) + sum(ways, [])):
+            bad("[overlap]: `rule`, `also` and `ways` name axioms as facts.json writes them, "
                 "as 'Tacit.outside_of_between'")
         if ov["kind"] not in OVERLAPS:
             bad(f"[overlap]: `kind` is one of {', '.join(OVERLAPS)}, the overlap catalogue's "
@@ -594,6 +603,21 @@ def validate_review(record: dict, book: str, n: int, *, require_stamp: bool = Tr
         elif ov["kind"] == "step" and "note" not in ov:
             bad("[overlap]: a rule that supplies a step needs a `note` saying which step, "
                 "and in which proof")
+        if ways and ov["kind"] == "step":
+            bad("[overlap]: only rules that state the proposition or give it at once have "
+                "further `ways`; a rule that supplies a step does not contain it")
+        seen_ways = []
+        combinations = [([ov["rule"]] + ov.get("also", []), "`rule` and `also`")]
+        combinations += [(way, f"`ways` {i}") for i, way in enumerate(ways, 1)]
+        for way, label in combinations:
+            for x in sorted({x for x in way if way.count(x) > 1}):
+                bad(f"[overlap]: {label} lists {x!r} twice")
+            same = [j for j, s in enumerate(seen_ways) if s == frozenset(way)]
+            if same:
+                bad(f"[overlap]: {label} names the same rules as "
+                    + ("`rule` and `also`" if same[0] == 0 else f"`ways` {same[0]}")
+                    + "; each combination is a different set of rules")
+            seen_ways.append(frozenset(way))
 
     # [coverage]
     if "coverage" in record:
@@ -750,6 +774,37 @@ def _self_test() -> int:
             validate_review(record, "I", 7, require_stamp=False, where="a test record")
             if not ok:
                 faults.append(f"validate_review accepts [overlap] {overlap}")
+        except ReviewError as e:
+            if ok:
+                faults.append(str(e))
+    # [overlap] `ways`: the further combinations that contain the proposition, for a rule
+    # that states it or gives it at once, each a different set of rules from `rule` with
+    # `also` and from each other. Whether Audit/Overlaps.lean proves each is
+    # check_fidelity's business.
+    first = {"rule": "Tacit.circle_eq", "also": ["Tacit.inside_not_on"], "kind": "gives"}
+    crossing = ["Definition15", "Tacit.len_lt_of_inside", "Tacit.lt_irrefl"]
+    radius = ["Definition15", "Tacit.inside_not_on", "Tacit.on_circle_of_len_eq"]
+    for ways, change, ok in [
+            ([crossing, radius], {}, True),
+            ([crossing], {"kind": "states"}, True),
+            ([["Tacit.circle_eq"]], {"also": []}, False),
+            ([radius], {"kind": "step", "note": "The rules supply a step of III.5's proof."},
+             False),
+            ([["Tacit.inside_not_on", "Tacit.circle_eq"]], {}, False),
+            ([radius, list(reversed(radius))], {}, False),
+            ([radius + ["Definition15"]], {}, False),
+            ([["Tacit.circle_eq", "Tacit.inside not_on"]], {}, False),
+            ([], {}, False),
+            ([[]], {}, False),
+            (radius, {}, False),
+            ([[""]], {}, False)]:
+        record = {"statement": {"scope": "full"}, "route": {"kind": "euclid"},
+                  "overlap": {**first, **change, "ways": ways},
+                  "review": {"stage": "exceptions", "reviewer": "Claude Opus 5.5"}}
+        try:
+            validate_review(record, "III", 5, require_stamp=False, where="a test record")
+            if not ok:
+                faults.append(f"validate_review accepts [overlap] {record['overlap']}")
         except ReviewError as e:
             if ok:
                 faults.append(str(e))

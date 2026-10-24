@@ -551,6 +551,28 @@ def rewritten_pins(rel: str) -> str | None:
     return AUDIT_PIN.sub(lambda m: m[0].replace(m[1], next(fresh), 1), text)
 
 
+# A combination that no theorem of Audit/Overlaps.lean proves III.5 from: the rules of
+# `Audit.III_5_crossing` without the Definition I.15 its proof needs. Each is an axiom in
+# facts.json, so only the audit can refuse it. Here, with with_way, not in
+# scripts/negative/unproved_way.py, because tests/test_negative_tests.py reads them.
+UNPROVED_WAY = ["Tacit.len_lt_of_inside", "Tacit.lt_irrefl"]
+TABLE_HEADER = re.compile(r"^\[\[?[\w.-]+\]\]?[ \t]*$", re.M)
+
+
+def with_way(text: str, way: list[str]) -> tuple[str, int]:
+    """A review record's text with `way` added at the end of its [overlap]'s `ways`, and
+    the number it takes among them. The [overlap] table is written again, a key to a line,
+    each value as JSON writes it, which TOML reads alike; the other tables are kept."""
+    import tomllib
+    start = re.search(r"^\[overlap\][ \t]*$", text, re.M).start()
+    end = (m.start() if (m := TABLE_HEADER.search(text, start + 1)) else len(text))
+    overlap = tomllib.loads(text[start:end])["overlap"]
+    overlap["ways"] = overlap.get("ways", []) + [list(way)]
+    table = "".join(f"{key} = {json.dumps(value, ensure_ascii=False)}\n"
+                    for key, value in overlap.items())
+    return text[:start] + "[overlap]\n" + table + "\n" + text[end:], len(overlap["ways"])
+
+
 class Plant(NamedTuple):
     """A plant as its file gives it: the name is the file's."""
     name: str

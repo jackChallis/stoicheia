@@ -890,6 +890,17 @@ def number_word(k):
     return NUMBER_WORDS[k] if k < len(NUMBER_WORDS) else str(k)
 
 
+ORDINAL_WORDS = ["", "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+                 "eighth", "ninth", "tenth"]
+
+
+def ordinal_word(k):
+    if 0 < k < len(ORDINAL_WORDS):
+        return ORDINAL_WORDS[k]
+    suffix = "th" if k % 100 in (11, 12, 13) else {1: "st", 2: "nd", 3: "rd"}.get(k % 10, "th")
+    return f"{k}{suffix}"
+
+
 def and_list(items):
     """["a"] ↦ "a"; ["a", "b", "c"] ↦ "a, b and c"."""
     items = list(items)
@@ -915,8 +926,14 @@ def overlap_rules(overlap):
 def overlap_rests(p, overlap):
     """Which rules its [overlap] names the proof rests on, from facts.json's `axioms`,
     in the record's order. Using some of the rules is distinct from using all or none."""
+    return way_rests(p, overlap_rules(overlap))
+
+
+def way_rests(p, rules):
+    """Which of a combination's rules the proof rests on, from facts.json's `axioms`, in
+    the combination's order."""
     axioms = (p or {}).get("axioms", [])
-    return [r for r in overlap_rules(overlap) if r in axioms]
+    return [r for r in rules if r in axioms]
 
 
 def overlap_use(p, overlap):
@@ -930,17 +947,98 @@ def overlap_use(p, overlap):
         return "our proof rests on " + ("the rule" if len(rules) == 1 else "all these rules")
     if not used:
         return "our proof does not use " + ("the rule" if len(rules) == 1 else "any of these rules")
-    unused = [r for r in rules if r not in used]
-    def names(rs):
-        return [f"`{r.removeprefix('Tacit.')}`" for r in rs]
+    return "of these rules, our proof " + partial_use(used, [r for r in rules if r not in used])
+
+
+def rule_names(rules):
+    """The rules as the pages write them: `circle_eq`, without `Tacit.`."""
+    return [f"`{r.removeprefix('Tacit.')}`" for r in rules]
+
+
+def partial_use(used, unused):
+    """What the proof does with a combination it uses only in part: "rests on `a` and does
+    not use `b`", and for the rules unused, as `overlap_use` says them."""
     if len(unused) == 1:
-        rest = f"does not use {names(unused)[0]}"
+        rest = f"does not use {rule_names(unused)[0]}"
     elif len(unused) == 2:
-        rest = "uses neither {} nor {}".format(*names(unused))
+        rest = "uses neither {} nor {}".format(*rule_names(unused))
     else:
-        rest = f"uses none of {and_list(names(unused))}"
+        rest = f"uses none of {and_list(rule_names(unused))}"
     comma = "," if len(used) > 1 else ""
-    return f"of these rules, our proof rests on {and_list(names(used))}{comma} and {rest}"
+    return f"rests on {and_list(rule_names(used))}{comma} and {rest}"
+
+
+def overlap_ways(overlap):
+    """Each combination of axioms that an [overlap] says contains the proposition: its rule
+    with any it needs `also`, then each further one it lists in `ways`, which only a rule
+    that states the proposition or gives it at once may have (heath.load_review)."""
+    return [overlap_rules(overlap)] + overlap.get("ways", [])
+
+
+def overlap_family(ways):
+    """The kind of axiom the combinations name: "tacit rules" when every one is, else
+    "axioms", as `overlap_word` says it of one combination."""
+    return "tacit rules" if all(r.startswith("Tacit.") for w in ways for r in w) else "axioms"
+
+
+def way_use(p, rules):
+    """One of several combinations, its rules named, with which of them the proof rests on,
+    from facts.json's `axioms`: "`a` and `b` together, of which our proof rests on `b` and
+    does not use `a`"; "… of which our proof rests on both", or "uses neither"."""
+    used = way_rests(p, rules)
+    unused = [r for r in rules if r not in used]
+    names = and_list(rule_names(rules))
+    if len(rules) == 1:
+        return f"{names}, " + ("on which our proof rests" if used else
+                               "which our proof does not use")
+    if not unused:
+        return (f"{names} together, of which our proof rests on "
+                + ("both" if len(rules) == 2 else f"all {number_word(len(rules))}"))
+    if not used:
+        return (f"{names} together, of which our proof uses "
+                + ("neither" if len(rules) == 2 else "none"))
+    return f"{names} together, of which our proof {partial_use(used, unused)}"
+
+
+def overlap_ways_line(p, overlap):
+    """What the line under the enunciation says of an [overlap] with `ways`, in a few
+    words: how many combinations contain the proposition, and whether our proof rests on
+    all, some or none of the rules of each, "our axioms already contain it in three ways,
+    and our proof rests on some of the rules of each". Where that differs from one to
+    another, each is taken by its place: "… rests on all the rules of the first, some of
+    the rules of the second and none of the rules of the third". The Overlap row names
+    the rules."""
+    ways = overlap_ways(overlap)
+    family = overlap_family(ways)
+    count = number_word(len(ways))
+    uses = ["all" if way_rests(p, w) == w else "some of" if way_rests(p, w) else "none of"
+            for w in ways]
+    if set(uses) == {"none of"}:
+        return (f"our {family} contain it too, in {count} ways, though this proof uses none "
+                "of their rules")
+    if len(set(uses)) == 1:
+        return (f"our {family} already contain it in {count} ways, and our proof rests on "
+                f"{uses[0]} the rules of each")
+    return (f"our {family} already contain it in {count} ways, and our proof rests on "
+            + and_list(f"{u} the rules of the {ordinal_word(k)}" for k, u in enumerate(uses, 1)))
+
+
+def overlap_ways_clause(p, overlap):
+    """The combinations of an [overlap] with `ways`, each with the rules our proof rests on
+    (`way_use`), for the book's summary: "in three ways: …; …; and …"."""
+    ways = [way_use(p, w) for w in overlap_ways(overlap)]
+    return f"in {number_word(len(ways))} ways: " + "; ".join(ways[:-1]) + "; and " + ways[-1]
+
+
+def overlap_contains_ways(p, overlap, what):
+    """What the book's summary says of an [overlap] with `ways`: our rules "already
+    contain" `what` in each way, or, where the proof uses none of the rules of any,
+    "contain it too"."""
+    ways = overlap_ways(overlap)
+    family = overlap_family(ways)
+    if any(way_rests(p, w) for w in ways):
+        return f"our {family} already contain {what} {overlap_ways_clause(p, overlap)}"
+    return f"our {family} contain {what} too, {overlap_ways_clause(p, overlap)}"
 
 
 def overlap_steps(overlap):
@@ -1002,7 +1100,9 @@ def in_lean_line(p, record, book, n):
         used = overlap_rests(p, ov)
         one = len(rules) == 1
         rule = "the rule" if one else "the rules"
-        if used and used != rules:
+        if len(overlap_ways(ov)) > 1:
+            parts.append(f"{overlap_ways_line(p, ov)} (see Overlap)")
+        elif used and used != rules:
             claim = ("supply a step of a proof of it" if overlap_steps(ov)
                      else "already contain it")
             parts.append(f"{overlap_word(ov)} {claim}; {overlap_use(p, ov)} (see Overlap)")
@@ -1088,15 +1188,30 @@ def field_table(book, n, p, record, attached, docs):
                 rows.append(("Representation", text))
         if "overlap" in record:
             ov = record["overlap"]
-            names = []
-            for rule in overlap_rules(ov):
+
+            def linked(rule):
                 doc, path, line = docs.get(rule, ("", "", 0))
                 name = f"`{rule.replace('Tacit.', '')}`"
-                names.append(f"[{name}](../../{path}#L{line})" if path else name)
+                return f"[{name}](../../{path}#L{line})" if path else name
+
+            names = [linked(rule) for rule in overlap_rules(ov)]
             name = and_list(names)
             one = len(names) == 1
             note = ov.get("note")
-            if note:
+            ways = overlap_ways(ov)
+            if len(ways) > 1:
+                # Each combination's rules, then the note; then, as for one combination,
+                # which rules our proof rests on, for each it uses only in part.
+                each = [and_list(linked(rule) for rule in w) for w in ways]
+                text = (f"{number_word(len(ways)).capitalize()} ways: " + "; ".join(each[:-1])
+                        + "; and " + each[-1] + ". "
+                        + (note or "Each way's rules together already contain this proposition."))
+                for k, w in enumerate(ways, 1):
+                    used = way_rests(p, w)
+                    if used and used != w:
+                        text += (f" Of the {ordinal_word(k)} way's rules, our proof "
+                                 f"{partial_use(used, [r for r in w if r not in used])}.")
+            elif note:
                 text = f"{name}: {note}"
             elif overlap_steps(ov):  # heath.py asks a note of a step; this is a fallback
                 text = (f"{name} {'supplies' if one else 'supply'} a step of a proof of this "
@@ -1104,7 +1219,7 @@ def field_table(book, n, p, record, attached, docs):
             else:
                 text = f"{name} already {'contains' if one else 'contain'} this proposition."
             used = overlap_rests(p, ov)
-            if used and used != overlap_rules(ov):
+            if len(ways) == 1 and used and used != overlap_rules(ov):
                 use = overlap_use(p, ov)
                 text += f" {use[0].upper()}{use[1:]}."
             if optional_path(ROOT / "docs" / "reports" / "overlaps.md") is not None:
@@ -1780,22 +1895,28 @@ def overlap_sentences(overlap, facts, records, links, up):
     proposition or gives it at once is said to contain it, as in the overlap catalogue.
     Where an overlap names several rules together, it says so, but not of rules that
     contain the proposition and go unused; partial use names the rules used and unused
-    separately for each proposition."""
+    separately for each proposition. A proposition that several combinations of rules
+    contain (`ways`) has a sentence of its own, naming each combination and which of its
+    rules our proof rests on, in the same place as a partial use."""
     def rules(r):
         return overlap_rules(records[r]["overlap"])
+
+    def several(r):
+        return len(overlap_ways(records[r]["overlap"])) > 1
 
     def together(rs):
         multi = [f"{r}, {number_word(len(rules(r)))} of them together" for r in rs
                  if len(rules(r)) > 1]
         return f" ({'; '.join('in ' + m for m in multi)})" if multi else ""
 
-    family = ("tacit rules" if all(x.startswith("Tacit.") for r in overlap for x in rules(r))
+    single = [r for r in overlap if not several(r)]
+    family = ("tacit rules" if all(x.startswith("Tacit.") for r in single for x in rules(r))
               else "axioms")
-    contain = [r for r in overlap if not overlap_steps(records[r]["overlap"])]
-    step = [r for r in overlap if r not in contain]
-    used_rules = {r: overlap_rests(facts.get(r), records[r]["overlap"]) for r in overlap}
-    rests = [r for r in overlap if used_rules[r] == rules(r)]
-    partial = [r for r in overlap if used_rules[r] and r not in rests]
+    contain = [r for r in single if not overlap_steps(records[r]["overlap"])]
+    step = [r for r in single if r not in contain]
+    used_rules = {r: overlap_rests(facts.get(r), records[r]["overlap"]) for r in single}
+    rests = [r for r in single if used_rules[r] == rules(r)]
+    partial = [r for r in single if used_rules[r] and r not in rests]
     out = []
     used = [r for r in contain if r in rests]
     if used:
@@ -1835,8 +1956,12 @@ def overlap_sentences(overlap, facts, records, links, up):
             out.append(f"In {and_list(links([r]) for r in unused)} our {family} supply a step "
                        f"of a proof of each proposition{extra}, but our proofs never use those "
                        "rules.")
-    for r in partial:
+    for r in (r for r in overlap if r in partial or several(r)):
         ov = records[r]["overlap"]
+        if several(r):
+            contains = overlap_contains_ways(facts.get(r), ov, "the proposition")
+            out.append(f"In {links([r])} {contains}.")
+            continue
         claim = ("supply a step of a proof of the proposition" if overlap_steps(ov)
                  else "already contain the proposition")
         out.append(f"In {links([r])} {overlap_word(ov)} {claim}; "
