@@ -804,6 +804,11 @@ REGISTRY = {
 REGISTRY_BOOK = {'DefinitionsIII': 'III'}
 REGISTRY_BUNDLED = ('Superposition/Syntax', 'Superposition/Semantics', 'Tacit/Superposition',
                     'Figures')
+# A group found in more than one file, each under Elements/Foundations/; any other is found in
+# its own. #517 moves `primitives`, which the rule of superposition and Common Notion 4 for
+# figures share, to a file of its own, so while the move lands it may stand in either; the
+# move's contract names the new file alone.
+REGISTRY_FILES = {'Tacit/Superposition': ('Tacit/Superposition', 'Superposition/Primitives')}
 
 
 def registry_for(books: tuple[tuple[str, int], ...], bundled: set[str]) -> dict[str, str]:
@@ -1071,9 +1076,10 @@ def glossary(index: Index, source: dict, code: list[str], extra: list[str] = (),
     groups = REGISTRY if groups is None else groups
     registry = {name: 'Elements.' + name for words in groups.values() for name in words.split()}
     for file, words in groups.items():
+        paths = [f'Elements/Foundations/{f}.lean' for f in REGISTRY_FILES.get(file, (file,))]
         for name in words.split():
             d = index.get(registry[name])
-            require(d.path == f'Elements/Foundations/{file}.lean', f'glossary registry moved: {name}')
+            require(d.path in paths, f'glossary registry moved: {name}')
     selected = set(extra)
     pending = '\n'.join(code)
     while True:
